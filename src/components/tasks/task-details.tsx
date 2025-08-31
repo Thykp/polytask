@@ -1,4 +1,6 @@
-import { TaskObject } from '~/components/tasks/types';
+'use client';
+
+import { TaskObject, TaskPriority, TaskStatus } from '~/components/tasks/types';
 import { Button } from '~/components/ui/button';
 import { TaskStatusSelector } from './status/task-status-selector';
 import { TaskAssigneeSelector } from './assignee/task-assignee-selector';
@@ -6,7 +8,7 @@ import { TaskDescriptionField } from './description/task-description-field';
 import { TaskTitleField } from './title/task-title-field';
 
 import { useAppDispatch, useAppSelector } from '~/store/hooks';
-import { assignTask, updateTask } from '~/store/features/tasks/tasks-slice';
+// ⬇️ removed local assignTask/updateTask imports
 import {
   taskDeleteCommandCreator,
   taskSelectNextCommandCreator,
@@ -14,7 +16,7 @@ import {
   taskUnselectCommandCreator,
 } from './task-commands';
 import { useCommands } from '../commands/commands-context';
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { cn } from '~/lib/utils';
 import { TaskPrioritySelector } from './priority/task-priority-selector';
 import {
@@ -23,13 +25,35 @@ import {
 } from '~/store/features/tasks/tasks-selectors';
 import { RiCloseLine } from 'react-icons/ri';
 
+// ⬇️ NEW: RTK Query mutation
+import { useUpdateTaskMutation } from '~/store/api/tasksApi';
+
+/** ---------- UI → API adapters (same as TaskList) ---------- */
+type ApiStatus = 'todo' | 'in_progress' | 'done';
+type ApiPriority = 'low' | 'medium' | 'high' | 'urgent';
+
+const statusUiToApi = (s: TaskStatus): ApiStatus => {
+  if (s === 'in-progress' || s === 'in-review') return 'in_progress';
+  if (s === 'done') return 'done';
+  if (s === 'cancelled') return 'done'; // or 'todo' if you prefer
+  return 'todo';
+};
+
+const priorityUiToApi = (p: TaskPriority): ApiPriority => {
+  const n = Number(p);
+  if (Number.isNaN(n) || n <= 0) return 'low';
+  if (n === 1) return 'medium';
+  if (n === 2) return 'high';
+  return 'urgent';
+};
+/** --------------------------------------------------------- */
+
 export type TaskDetailsProps = {
   task: TaskObject;
 };
 
 export function TaskDetails({ task }: TaskDetailsProps) {
   const { registerCommand } = useCommands();
-
   const dispatch = useAppDispatch();
 
   const hasNextTask = useAppSelector(selectHasNextTask);
@@ -42,9 +66,24 @@ export function TaskDetails({ task }: TaskDetailsProps) {
   );
   const taskUnselectCommand = useMemo(() => taskUnselectCommandCreator(), []);
 
+  // ⬇️ RTK Query mutation
+  const [updateTask] = useUpdateTaskMutation();
+
+  // Small debouncers for title/description so we don't update on every keystroke
+  const titleTimer = useRef<number | null>(null);
+  const descTimer = useRef<number | null>(null);
+  const DEBOUNCE_MS = 350;
+
+  function debounceUpdate(ref: React.MutableRefObject<number | null>, patch: Parameters<typeof updateTask>[0]) {
+    if (ref.current) window.clearTimeout(ref.current);
+    ref.current = window.setTimeout(() => {
+      updateTask(patch);
+      ref.current = null;
+    }, DEBOUNCE_MS) as unknown as number;
+  }
+
   useEffect(() => {
     const unregisterTaskDelete = registerCommand(taskDeleteCommand);
-
     return () => {
       unregisterTaskDelete();
     };
@@ -52,8 +91,7 @@ export function TaskDetails({ task }: TaskDetailsProps) {
 
   return (
     <div className={cn('divide-y divide-input')}>
-      <div
-        className={cn('flex items-center gap-2 justify-between', 'py-2 px-3')}>
+      <div className={cn('flex items-center gap-2 justify-between', 'py-2 px-3')}>
         <div className="flex items-center gap-x-1.5">
           <Button
             variant="outline"
@@ -109,18 +147,18 @@ export function TaskDetails({ task }: TaskDetailsProps) {
         <TaskTitleField
           key={task.id}
           value={task.title}
-          onChange={(value) =>
-            dispatch(updateTask({ id: task.id, updates: { title: value } }))
-          }
+          onChange={(value) => {
+            if (value !== task.title) {
+              debounceUpdate(titleTimer, { id: task.id, title: value });
+            }
+          }}
         />
         <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4 -ml-2">
           <TaskStatusSelector
             value={task.status}
             onChange={(newStatus) => {
               if (newStatus !== task.status) {
-                dispatch(
-                  updateTask({ id: task.id, updates: { status: newStatus } }),
-                );
+                updateTask({ id: task.id, status: statusUiToApi(newStatus) });
               }
             }}
           />
@@ -128,7 +166,7 @@ export function TaskDetails({ task }: TaskDetailsProps) {
             value={task.priority}
             onChange={(p) => {
               if (p !== task.priority) {
-                dispatch(updateTask({ id: task.id, updates: { priority: p } }));
+                updateTask({ id: task.id, priority: priorityUiToApi(p) });
               }
             }}
           />
@@ -136,12 +174,11 @@ export function TaskDetails({ task }: TaskDetailsProps) {
             value={task.assignee?.id ?? undefined}
             onChange={(assigneeId) => {
               if (assigneeId !== task.assignee?.id) {
-                dispatch(
-                  assignTask({
-                    id: task.id,
-                    assigneeId,
-                  }),
-                );
+                updateTask({
+                  id: task.id,
+                  assignee_email:
+                    assigneeId == null ? undefined : String(assigneeId),
+                });
               }
             }}
           />
@@ -150,12 +187,10 @@ export function TaskDetails({ task }: TaskDetailsProps) {
           value={task.description || ''}
           onChange={(newDescription) => {
             if (newDescription !== task.description) {
-              dispatch(
-                updateTask({
-                  id: task.id,
-                  updates: { description: newDescription },
-                }),
-              );
+              debounceUpdate(descTimer, {
+                id: task.id,
+                description: newDescription,
+              });
             }
           }}
         />

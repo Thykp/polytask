@@ -1,5 +1,5 @@
+'use client';
 import { useRef } from 'react';
-
 import {
   Command,
   CommandInput,
@@ -8,8 +8,7 @@ import {
   CommandEmpty,
   CommandGroup,
 } from '~/components/ui/command';
-
-import { assignees } from '~/data/mock-assignees';
+import { useListProfilesQuery } from '~/store/api/profilesApi';
 
 type Props = {
   onSelect: (assigneeId: string) => void;
@@ -17,6 +16,7 @@ type Props = {
 
 export function TaskAssigneeCombobox({ onSelect }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const { data: profiles = [] } = useListProfilesQuery();
 
   return (
     <Command onMouseOver={() => inputRef.current?.focus()}>
@@ -26,22 +26,26 @@ export function TaskAssigneeCombobox({ onSelect }: Props) {
         className="h-9"
       />
       <CommandList>
-        <CommandEmpty>No assignee found.</CommandEmpty>
+        <CommandEmpty>No user found.</CommandEmpty>
         <CommandGroup>
-          {assignees.map((assignee) => (
+          {profiles.map((p) => (
             <CommandItem
-              key={assignee.id}
-              value={assignee.name}
-              onSelect={() => {
-                onSelect(assignee.id);
-              }}
-              className="flex items-center gap-2">
+              key={p.id}
+              value={p.email}
+              onSelect={() => onSelect(p.email)}
+              className="flex items-center gap-2"
+            >
               <img
-                src={assignee.avatar}
-                alt={assignee.name}
+                src={
+                  p.avatar_url ??
+                  `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(
+                    p.email
+                  )}`
+                }
+                alt={p.name ?? p.email}
                 className="size-5 rounded-full"
               />
-              <span>{assignee.name}</span>
+              <span>{p.name ?? p.email}</span>
             </CommandItem>
           ))}
         </CommandGroup>

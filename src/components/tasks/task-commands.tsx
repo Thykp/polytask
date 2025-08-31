@@ -16,12 +16,15 @@ import {
 import type { CommandCreator, CommandData } from '~/components/commands/types';
 import {
   clearSelectedTask,
-  deleteTask,
   selectNextTask,
   selectPreviousTask,
 } from '~/store/features/tasks/tasks-slice';
 import { resetToDefault } from '~/store/features/display/display-slice';
 import { store } from '~/store/store';
+
+// NEW: Supabase + RTK Query invalidation
+import { supabase } from '~/lib/supabase';
+import { tasksApi } from '~/store/api/tasksApi';
 
 // Undo
 export const taskUndoCommandData: CommandData = {
@@ -153,7 +156,7 @@ export const taskAssigneeOpenCommandCreator: CommandCreator = (
   commandPalette: true,
 });
 
-// Delete task
+// UPDATED: Delete task via Supabase + invalidate RTK Query cache
 export const taskDeleteCommandData: CommandData = {
   id: 'task.delete',
   name: 'Delete task',
@@ -164,7 +167,17 @@ export const taskDeleteCommandData: CommandData = {
 };
 export const taskDeleteCommandCreator: CommandCreator = (id: string) => ({
   ...taskDeleteCommandData,
-  action: () => store.dispatch(deleteTask(id)),
+  action: async () => {
+    if (!id) return;
+    const { error } = await supabase.from('tasks').delete().eq('id', id);
+    if (error) {
+      console.error('Failed to delete task:', error.message);
+      return;
+    }
+    // Clear selection and refresh the list
+    store.dispatch(clearSelectedTask());
+    store.dispatch(tasksApi.util.invalidateTags([{ type: 'Tasks', id: 'LIST' }]));
+  },
   commandPalette: true,
 });
 

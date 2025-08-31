@@ -4,6 +4,7 @@ import { Geist, Geist_Mono, Poppins } from 'next/font/google';
 import { ThemeProvider } from '~/components/theme/theme-provider';
 import { ReduxProvider } from '~/components/providers/redux-provider';
 import { CommandsProvider } from '~/components/commands/commands-context';
+import SessionGate from '~/components/providers/session-gate';
 
 import { cn } from '~/lib/utils';
 import './globals.css';
@@ -43,15 +44,20 @@ export default function RootLayout({
           geistMono.variable,
           poppins.variable,
           'antialiased',
-        )}>
+        )}
+      >
         <ReduxProvider>
           <CommandsProvider>
             <ThemeProvider
               attribute="class"
               defaultTheme="system"
               enableSystem
-              disableTransitionOnChange>
-              <TooltipProvider>{children}</TooltipProvider>
+              disableTransitionOnChange
+            >
+              {/* Gate everything except /auth behind a signed-in session */}
+              <SessionGate>
+                <TooltipProvider>{children}</TooltipProvider>
+              </SessionGate>
             </ThemeProvider>
           </CommandsProvider>
         </ReduxProvider>

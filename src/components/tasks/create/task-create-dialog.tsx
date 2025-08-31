@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useMemo, useState } from 'react';
 import {
   Dialog,
@@ -13,7 +15,7 @@ import { TaskDescriptionField } from '~/components/tasks/description/task-descri
 import { TaskStatusSelector } from '~/components/tasks/status/task-status-selector';
 import { TaskAssigneeSelector } from '~/components/tasks/assignee/task-assignee-selector';
 import { useAppDispatch, useAppSelector } from '~/store/hooks';
-import { addTask, setSelectedTask } from '~/store/features/tasks/tasks-slice';
+import { setSelectedTask } from '~/store/features/tasks/tasks-slice';
 import { selectAllTasks } from '~/store/features/tasks/tasks-selectors';
 import type {
   TaskRaw,
@@ -24,24 +26,34 @@ import { TaskPrioritySelector } from '../priority/task-priority-selector';
 import { taskCreateDialogOpenCommandCreator } from '../task-commands';
 import { useCommands } from '~/components/commands/commands-context';
 
+// ⬇️ NEW: Supabase + RTK Query
+import { supabase } from '~/lib/supabase';
+import { useCreateTaskMutation } from '~/store/api/tasksApi';
+import type { Task as ApiTask } from '~/store/api/tasksApi';
+
 function getTodayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// TODO: Should be globally unique and not depend on existing tasks
-// because undo/redo affects task IDs. Maybe shift it into Redux store
-function getNextTaskId(existingIds: string[]) {
-  let maxNum = 0;
-  for (const id of existingIds) {
-    const match = id.match(/^(.*?-)(\d+)$/);
-    if (match) {
-      const num = parseInt(match[2], 10);
-      if (!Number.isNaN(num)) {
-        maxNum = Math.max(maxNum, num);
-      }
-    }
-  }
-  return `MUL-${maxNum + 1}`;
+/** ---- UI <-> API adapters (same conventions as in TaskList) ---- **/
+
+type ApiStatus = ApiTask['status'];       // 'todo' | 'in_progress' | 'done'
+type ApiPriority = ApiTask['priority'];   // 'low' | 'medium' | 'high' | 'urgent'
+
+function priorityUiToApi(p: TaskPriority): ApiPriority {
+  const n = Number(p);
+  if (Number.isNaN(n) || n <= 0) return 'low';
+  if (n === 1) return 'medium';
+  if (n === 2) return 'high';
+  return 'urgent'; // n >= 3
+}
+
+function statusUiToApi(s: TaskStatus): ApiStatus {
+  // UI supports: 'todo' | 'in-progress' | 'in-review' | 'done' | 'cancelled'
+  // DB supports: 'todo' | 'in_progress' | 'done'
+  if (s === 'in-progress' || s === 'in-review') return 'in_progress';
+  if (s === 'cancelled') return 'done'; // pick 'done' or 'todo'; DB has no 'cancelled'
+  return (s === 'done' ? 'done' : 'todo') as ApiStatus;
 }
 
 const commandScope = 'create-dialog';
@@ -58,7 +70,18 @@ export function TaskCreateDialog() {
   const [priority, setPriority] = useState<TaskPriority>(0);
   const [assigneeId, setAssigneeId] = useState<string | null>(null);
 
-  const nextId = useMemo(() => getNextTaskId(tasks.map((t) => t.id)), [tasks]);
+  // We keep nextId only for UI parity (not used by DB which autogenerates UUIDs)
+  const nextId = useMemo(() => {
+    let maxNum = 0;
+    for (const id of tasks.map((t) => t.id)) {
+      const match = id.match(/^(.*?-)(\d+)$/);
+      if (match) {
+        const num = parseInt(match[2], 10);
+        if (!Number.isNaN(num)) maxNum = Math.max(maxNum, num);
+      }
+    }
+    return `MUL-${maxNum + 1}`;
+  }, [tasks]);
 
   function resetForm() {
     setTitle('');
@@ -68,10 +91,20 @@ export function TaskCreateDialog() {
     setAssigneeId(null);
   }
 
-  function handleCreate() {
+  // ⬇️ NEW: RTK Query mutation
+  const [createTask, { isLoading: isCreating }] = useCreateTaskMutation();
+
+  async function handleCreate() {
     const createdAt = getTodayDateString();
-    const newTask: TaskRaw = {
-      id: nextId,
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      // Shouldn’t happen due to SessionGate, but guard anyway.
+      return;
+    }
+
+    // Prepare UI TaskRaw (for local selection UI continuity)
+    const uiNewTask: TaskRaw = {
+      id: nextId, // local-only; DB will return a UUID id
       title: title.trim() || 'Untitled',
       description: description,
       status,
@@ -81,8 +114,23 @@ export function TaskCreateDialog() {
       createdAt,
       updatedAt: createdAt,
     };
-    dispatch(addTask(newTask));
-    dispatch(setSelectedTask(newTask.id));
+
+    // Call API create (DB will generate id)
+    const res = await createTask({
+      title: uiNewTask.title,
+      description: uiNewTask.description,
+      status: statusUiToApi(uiNewTask.status),
+      priority: priorityUiToApi(uiNewTask.priority),
+      assignee_email: uiNewTask.assigneeId ?? undefined,
+      created_by: user.id,
+    });
+
+    // If fulfilled, select the server id; otherwise fallback to local nextId
+    
+    const data = (res && 'data' in res) ? (res.data as ApiTask) : null;
+    const newId = data?.id ?? uiNewTask.id;
+
+    dispatch(setSelectedTask(newId));
     setOpen(false);
     resetForm();
   }
@@ -98,19 +146,13 @@ export function TaskCreateDialog() {
   useEffect(() => {
     if (open) {
       setScope({ name: commandScope, allowGlobalKeybindings: false });
-
-      return () => {
-        clearScope();
-      };
+      return () => { clearScope(); };
     }
   }, [open, setScope, clearScope]);
 
   useEffect(() => {
     const unregisterDialogOpen = registerCommand(openCommand);
-
-    return () => {
-      unregisterDialogOpen();
-    };
+    return () => { unregisterDialogOpen(); };
   }, [registerCommand, openCommand]);
 
   return (
@@ -161,8 +203,9 @@ export function TaskCreateDialog() {
           <Button
             variant="default"
             onClick={handleCreate}
-            disabled={!title.trim()}>
-            Create
+            disabled={!title.trim() || isCreating}
+          >
+            {isCreating ? 'Creating…' : 'Create'}
           </Button>
         </DialogFooter>
       </DialogContent>
